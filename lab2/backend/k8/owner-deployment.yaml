@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: owner-deployment
+  namespace: yelp-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: owner
+  template:
+    metadata:
+      labels:
+        app: owner
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z mysql-service 3306; do
+                echo "Waiting for MySQL..."
+                sleep 2
+              done
+      containers:
+        - name: owner
+          image: 531396344377.dkr.ecr.us-west-1.amazonaws.com/owner-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8002
+          envFrom:
+            - configMapRef:
+                name: yelp-config
+            - secretRef:
+                name: yelp-secret

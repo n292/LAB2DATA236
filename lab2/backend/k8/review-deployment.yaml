@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: review-deployment
+  namespace: yelp-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: review
+  template:
+    metadata:
+      labels:
+        app: review
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z mysql-service 3306; do
+                echo "Waiting for MySQL..."
+                sleep 2
+              done
+      containers:
+        - name: review
+          image: 531396344377.dkr.ecr.us-west-1.amazonaws.com/review-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8004
+          envFrom:
+            - configMapRef:
+                name: yelp-config
+            - secretRef:
+                name: yelp-secret

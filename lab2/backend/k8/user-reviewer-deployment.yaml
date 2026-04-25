@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-reviewer-deployment
+  namespace: yelp-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-reviewer
+  template:
+    metadata:
+      labels:
+        app: user-reviewer
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z mysql-service 3306; do
+                echo "Waiting for MySQL..."
+                sleep 2
+              done
+      containers:
+        - name: user-reviewer
+          image: 531396344377.dkr.ecr.us-west-1.amazonaws.com/user-reviewer-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: yelp-config
+            - secretRef:
+                name: yelp-secret

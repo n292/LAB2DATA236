@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yelp-config
+  namespace: yelp-app
+data:
+  DB_TYPE: "mysql"
+  DB_HOST: "mysql-service"
+  DB_NAME: "yelp_db"
+  DB_PORT: "3306"
+  ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+  OLLAMA_MODEL: "llama3.1:8b"
+  OLLAMA_BASE_URL: "http://ollama-service:11434"

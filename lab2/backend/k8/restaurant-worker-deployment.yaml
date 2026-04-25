@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurant-worker-deployment
+  namespace: yelp-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restaurant-worker
+  template:
+    metadata:
+      labels:
+        app: restaurant-worker
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z mysql-service 3306; do
+                echo "Waiting for MySQL..."
+                sleep 2
+              done
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-service 9092; do
+                echo "Waiting for Kafka..."
+                sleep 2
+              done
+      containers:
+        - name: restaurant-worker
+          image: 531396344377.dkr.ecr.us-west-1.amazonaws.com/restaurant-worker-service:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: yelp-config
+            - secretRef:
+                name: yelp-secret
