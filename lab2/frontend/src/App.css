@@ -1,0 +1,152 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  font-family: Inter, Arial, Helvetica, sans-serif;
+  background: #f7f7f7;
+  color: #2d2d2d;
+}
+
+a {
+  text-decoration: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+main {
+  flex: 1;
+}
+
+.navbar-custom {
+  background: #ffffff !important;
+  border-bottom: 1px solid #e6e6e6;
+  box-shadow: none;
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.brand-logo {
+  font-size: 28px;
+  font-weight: 800;
+  color: #d32323 !important;
+  letter-spacing: -0.5px;
+}
+
+.navbar-custom .nav-link {
+  color: #2d2d2d !important;
+  margin-left: 10px;
+  font-weight: 600;
+}
+
+.navbar-custom .nav-link:hover {
+  color: #d32323 !important;
+}
+
+.footer {
+  background: #ffffff;
+  color: #6e7072;
+  border-top: 1px solid #e6e6e6;
+  padding: 24px 0;
+  margin-top: auto;
+}
+
+.footer-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.footer-content p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.footer-nav {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.footer-nav a {
+  color: #6e7072;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.footer-nav a:hover {
+  color: #d32323;
+}
+
+.alert {
+  border-radius: 10px;
+  border: 1px solid #f1caca;
+  box-shadow: none;
+}
+
+.alert-danger {
+  background-color: #fff3f3;
+  color: #9b1c1c;
+}
+
+.btn-danger {
+  background-color: #d32323;
+  border-color: #d32323;
+  font-weight: 700;
+}
+
+.btn-danger:hover,
+.btn-danger:focus {
+  background-color: #b91c1c;
+  border-color: #b91c1c;
+}
+
+.btn-outline-danger {
+  color: #d32323;
+  border-color: #d32323;
+}
+
+.btn-outline-danger:hover {
+  background-color: #d32323;
+  border-color: #d32323;
+  color: white;
+}
+
+.card {
+  border: 1px solid #e6e6e6;
+  border-radius: 12px;
+  box-shadow: none;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: #d32323;
+  box-shadow: 0 0 0 0.15rem rgba(211, 35, 35, 0.12);
+}
+
+.spinner-border {
+  color: #d32323;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
