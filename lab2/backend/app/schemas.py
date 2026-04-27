@@ -56,13 +56,13 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: str
-    phone: Optional[str]
-    about_me: Optional[str]
-    city: Optional[str]
-    country: Optional[str]
-    state: Optional[str]
-    languages: Optional[str]
-    gender: Optional[str]
+    phone: Optional[str] = None
+    about_me: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    state: Optional[str] = None
+    languages: Optional[str] = None
+    gender: Optional[str] = None
     role: str
     created_at: datetime
     profile_photo_data: Optional[str] = None
@@ -106,15 +106,15 @@ class RestaurantResponse(BaseModel):
     id: int
     name: str
     cuisine_type: str
-    description: Optional[str]
+    description: Optional[str] = None
     address: str
     city: str
-    zip_code: Optional[str]
-    phone: Optional[str]
-    email: Optional[str]
-    hours_of_operation: Optional[dict]
-    amenities: Optional[list]
-    pricing_tier: Optional[str]
+    zip_code: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    hours_of_operation: Optional[dict] = None
+    amenities: Optional[list] = None
+    pricing_tier: Optional[str] = None
     average_rating: float
     review_count: int
     created_at: datetime
@@ -140,7 +140,7 @@ class ReviewResponse(BaseModel):
     user_id: int
     restaurant_id: int
     rating: int
-    comment: Optional[str]
+    comment: Optional[str] = None
     created_at: datetime
     author: Optional[UserResponse]
 
