@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Container, Form, Button, Alert } from 'react-bootstrap';
+import { useDispatch, useSelector } from 'react-redux';
+import { loginStart, loginSuccess, loginFailure } from '../../redux/slices/authSlice';
 import authService from '../../services/auth';
 import './Auth.css';
 
@@ -12,8 +14,9 @@ function Signup() {
     confirmPassword: '',
     role: 'user',
   });
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const { loading, error: reduxError } = useSelector((state) => state.auth);
+  const [localError, setLocalError] = useState('');
+  const dispatch = useDispatch();
   const navigate = useNavigate();
 
   const handleChange = (e) => {
@@ -23,14 +26,14 @@ function Signup() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+    setLocalError('');
 
     if (formData.password !== formData.confirmPassword) {
-      setError('Passwords do not match');
+      setLocalError('Passwords do not match');
       return;
     }
 
-    setLoading(true);
+    dispatch(loginStart());
 
     try {
       await authService.signup(
@@ -41,13 +44,19 @@ function Signup() {
       );
       // Auto login after signup
       await authService.login(formData.email, formData.password);
+      
+      const userData = JSON.parse(localStorage.getItem('user'));
+      const token = localStorage.getItem('token');
+      
+      dispatch(loginSuccess({ user: userData, token: token }));
       navigate('/');
     } catch (err) {
-      setError(err.detail || 'Signup failed. Please try again.');
-    } finally {
-      setLoading(false);
+      const msg = err.detail || 'Signup failed. Please try again.';
+      dispatch(loginFailure(msg));
     }
   };
+
+  const displayError = localError || reduxError;
 
   return (
     <Container className="auth-container">
@@ -55,7 +64,7 @@ function Signup() {
         <h1>Create Account</h1>
         <p className="text-muted">Join Yelp today</p>
 
-        {error && <Alert variant="danger">{error}</Alert>}
+        {displayError && <Alert variant="danger">{displayError}</Alert>}
 
         <Form onSubmit={handleSubmit}>
           <Form.Group className="mb-3">
