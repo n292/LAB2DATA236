@@ -2,15 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
-from database import Base, engine
 from routes import auth, users, restaurants, reviews, favorites, ai_assistant
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
-
-# Create all database tables
-Base.metadata.create_all(bind=engine)
 
 # CORS configuration
 cors_origins = [
