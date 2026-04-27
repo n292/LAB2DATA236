@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate } from "react-router-dom";
 import { Container, Navbar, Nav } from "react-bootstrap";
+import { useSelector, useDispatch } from 'react-redux';
+import { logout } from './redux/slices/authSlice';
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./App.css";
 
@@ -17,29 +19,14 @@ import ProfilePage from "./components/Profile/ProfilePage";
 import PreferencesEditor from "./components/Profile/PreferencesEditor";
 import AIChatbot from "./components/ChatBot/AIChatbot";
 import ProtectedRoute from "./components/Auth/ProtectedRoute";
-import authService from "./services/auth";
 
 function AppLayout() {
   const navigate = useNavigate();
-  const [isLoggedIn, setIsLoggedIn] = useState(!!authService.getToken?.());
-
-  useEffect(() => {
-    const syncAuth = () => {
-      setIsLoggedIn(!!authService.getToken?.());
-    };
-
-    window.addEventListener("authChanged", syncAuth);
-    window.addEventListener("storage", syncAuth);
-
-    return () => {
-      window.removeEventListener("authChanged", syncAuth);
-      window.removeEventListener("storage", syncAuth);
-    };
-  }, []);
+  const dispatch = useDispatch();
+  const { isLoggedIn, user } = useSelector((state) => state.auth);
 
   const handleLogout = () => {
-    authService.logout();
-    setIsLoggedIn(false);
+    dispatch(logout());
     navigate("/login");
   };
 

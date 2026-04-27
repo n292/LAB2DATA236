@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+
+# Node
+node_modules/
+dist/
+build/
+.npm
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Lab 2 Specifics
+lab2/users.csv
+yelp_dev.db
+*.log

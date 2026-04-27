@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.openapi.utils import get_openapi
 from dotenv import load_dotenv
-from database import Base, engine
 from routes import restaurants
 try:
     from app.restaurant_kafka_routes import router as restaurant_kafka_router
@@ -11,7 +10,6 @@ except ImportError:
     from restaurant_kafka_routes import router as restaurant_kafka_router
 
 load_dotenv()
-Base.metadata.create_all(bind=engine)
 
 cors_origins = [
     "http://localhost:3000",

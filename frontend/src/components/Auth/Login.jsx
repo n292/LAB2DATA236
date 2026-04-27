@@ -1,14 +1,16 @@
 import React, { useState } from "react";
 import { useNavigate, Link, useLocation } from "react-router-dom";
 import { Container, Form, Button, Alert } from "react-bootstrap";
+import { useDispatch, useSelector } from 'react-redux';
+import { loginStart, loginSuccess, loginFailure } from '../../redux/slices/authSlice';
 import authService from "../../services/auth";
 import "./Auth.css";
 
 function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const { loading, error } = useSelector((state) => state.auth);
+  const dispatch = useDispatch();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -20,12 +22,16 @@ function Login() {
 
     if (loading) return;
 
-    setError("");
-    setLoading(true);
+    dispatch(loginStart());
 
     try {
-      await authService.login(email, password);
-      window.dispatchEvent(new Event("authChanged"));
+      const response = await authService.login(email, password);
+      // Assuming authService.login returns the user and token
+      // If it doesn't return user, we might need another fetch
+      const userData = JSON.parse(localStorage.getItem('user'));
+      const token = localStorage.getItem('token');
+      
+      dispatch(loginSuccess({ user: userData, token: token }));
       navigate(from, { replace: true });
     } catch (err) {
       console.error("Login error:", err);
@@ -37,9 +43,7 @@ function Login() {
         err?.message ||
         "Invalid email or password";
 
-      setError(typeof errorMessage === "string" ? errorMessage : "Invalid email or password");
-    } finally {
-      setLoading(false);
+      dispatch(loginFailure(typeof errorMessage === "string" ? errorMessage : "Invalid email or password"));
     }
   };
 

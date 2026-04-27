@@ -1,121 +1,114 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Header
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
-from models import Restaurant, Favorite, Review, User
+from fastapi import APIRouter, HTTPException, status, Query, Header
 from schemas import RestaurantCreate, RestaurantUpdate, RestaurantResponse
-from database import get_db
+from mongodb import mongo_db
 from utils.security import decode_token
+from datetime import datetime, timezone
+import os
 import json
 import base64
+import re
+
+import uuid
+from kafka import KafkaProducer
 
 router = APIRouter(prefix="/api/restaurants", tags=["restaurants"])
 
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+producer = None
+
+def get_producer():
+    global producer
+    if producer is None:
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+        except Exception as e:
+            print(f"Kafka Producer error: {e}")
+    return producer
 
 def normalize_role(role):
     if role is None:
         return "user"
-
     if hasattr(role, "value"):
         return str(role.value).strip().lower()
-
     role_str = str(role).strip()
-
     if "." in role_str:
         role_str = role_str.split(".")[-1]
-
     return role_str.lower()
 
-
-def get_current_user_from_header(
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
-):
+def get_current_user_from_header(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid authorization header"
         )
-
     token = authorization.split(" ")[1]
     payload = decode_token(token)
-
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
-
     user_id = int(payload.get("sub"))
-    user = db.query(User).filter(User.id == user_id).first()
-
+    user = mongo_db.users.find_one({"_id": user_id})
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-
     return user
 
-
-def get_owner_name(restaurant: Restaurant, db: Session):
-    owner_relation = getattr(restaurant, "owner", None)
-    if owner_relation and getattr(owner_relation, "name", None):
-        return owner_relation.name
-
-    if restaurant.owner_id:
-        owner = db.query(User).filter(User.id == restaurant.owner_id).first()
+def get_owner_name(restaurant: dict):
+    owner_id = restaurant.get("owner_id")
+    if owner_id:
+        owner = mongo_db.users.find_one({"_id": owner_id})
         if owner:
-            return owner.name
-
+            return owner.get("name")
     return None
 
-
-def serialize_restaurant(restaurant: Restaurant, db: Session):
+def serialize_restaurant(restaurant: dict):
     photo_data = None
-
-    if restaurant.photos:
+    photos = restaurant.get("photos", {})
+    if isinstance(photos, bytes):
         try:
-            photo_base64 = base64.b64encode(restaurant.photos).decode("utf-8")
+            photo_base64 = base64.b64encode(photos).decode("utf-8")
             photo_data = f"data:image/jpeg;base64,{photo_base64}"
         except Exception as e:
             print(f"Error encoding photo: {e}")
             photo_data = None
 
     return {
-        "id": restaurant.id,
-        "name": restaurant.name,
-        "cuisine_type": restaurant.cuisine_type,
-        "description": restaurant.description,
-        "address": restaurant.address,
-        "city": restaurant.city,
-        "zip_code": restaurant.zip_code,
-        "phone": restaurant.phone,
-        "email": restaurant.email,
-        "hours_of_operation": json.loads(restaurant.hours_of_operation)
-        if restaurant.hours_of_operation else None,
-        "amenities": json.loads(restaurant.amenities)
-        if restaurant.amenities else None,
-        "pricing_tier": restaurant.pricing_tier,
-        "owner_id": restaurant.owner_id,
-        "owner_name": get_owner_name(restaurant, db),
-        "average_rating": restaurant.average_rating,
-        "review_count": restaurant.review_count,
-        "created_at": restaurant.created_at,
+        "id": restaurant.get("_id"),
+        "name": restaurant.get("name"),
+        "cuisine_type": restaurant.get("cuisine_type"),
+        "description": restaurant.get("description"),
+        "address": restaurant.get("location", {}).get("address"),
+        "city": restaurant.get("location", {}).get("city"),
+        "zip_code": restaurant.get("location", {}).get("zip_code"),
+        "phone": restaurant.get("contact", {}).get("phone"),
+        "email": restaurant.get("contact", {}).get("email"),
+        "hours_of_operation": json.loads(restaurant.get("hours_of_operation", "null")) if isinstance(restaurant.get("hours_of_operation"), str) else restaurant.get("hours_of_operation"),
+        "amenities": json.loads(restaurant.get("amenities", "null")) if isinstance(restaurant.get("amenities"), str) else restaurant.get("amenities"),
+        "pricing_tier": restaurant.get("pricing_tier"),
+        "owner_id": restaurant.get("owner_id"),
+        "owner_name": get_owner_name(restaurant),
+        "average_rating": restaurant.get("average_rating", 0),
+        "review_count": restaurant.get("review_count", 0),
+        "created_at": restaurant.get("created_at"),
         "photo_data": photo_data,
     }
-
 
 def decode_photo_data(photo_data: str | None):
     if not photo_data or not photo_data.startswith("data:image"):
         return None
-
     try:
         photo_data_str = photo_data.split(",", 1)[1]
         return base64.b64decode(photo_data_str)
     except Exception as e:
         print(f"Error processing photo data: {e}")
         return None
-
 
 @router.get("/", response_model=list[RestaurantResponse])
 def search_restaurants(
@@ -124,80 +117,44 @@ def search_restaurants(
     city: str = Query(None),
     keywords: str = Query(None),
     skip: int = Query(0),
-    limit: int = Query(50),
-    db: Session = Depends(get_db)
+    limit: int = Query(50)
 ):
-    query = db.query(Restaurant)
-
+    query = {}
     if name:
-        query = query.filter(Restaurant.name.ilike(f"%{name}%"))
-
+        query["name"] = {"$regex": re.compile(name, re.IGNORECASE)}
     if cuisine:
-        query = query.filter(Restaurant.cuisine_type.ilike(f"%{cuisine}%"))
-
+        query["cuisine_type"] = {"$regex": re.compile(cuisine, re.IGNORECASE)}
     if city:
-        query = query.filter(Restaurant.city.ilike(f"%{city}%"))
-
+        query["location.city"] = {"$regex": re.compile(city, re.IGNORECASE)}
     if keywords:
-        query = query.filter(
-            or_(
-                Restaurant.description.ilike(f"%{keywords}%"),
-                Restaurant.amenities.ilike(f"%{keywords}%")
-            )
-        )
+        kw_regex = re.compile(keywords, re.IGNORECASE)
+        query["$or"] = [
+            {"description": {"$regex": kw_regex}},
+            {"amenities": {"$regex": kw_regex}}
+        ]
 
-    restaurants = query.offset(skip).limit(limit).all()
-    return [serialize_restaurant(r, db) for r in restaurants]
-
+    restaurants = list(mongo_db.restaurants.find(query).skip(skip).limit(limit))
+    return [serialize_restaurant(r) for r in restaurants]
 
 @router.get("/user/{user_id}", response_model=list[RestaurantResponse])
-def get_user_restaurants(
-    user_id: int,
-    skip: int = Query(0),
-    limit: int = Query(10),
-    db: Session = Depends(get_db)
-):
-    restaurants = (
-        db.query(Restaurant)
-        .filter(Restaurant.owner_id == user_id)
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-
-    return [serialize_restaurant(r, db) for r in restaurants]
-
+def get_user_restaurants(user_id: int, skip: int = Query(0), limit: int = Query(10)):
+    restaurants = list(mongo_db.restaurants.find({"owner_id": user_id}).skip(skip).limit(limit))
+    return [serialize_restaurant(r) for r in restaurants]
 
 @router.get("/owner/list", response_model=list[RestaurantResponse])
 def get_owner_restaurants(
     authorization: str = Header(None),
     skip: int = Query(0),
-    limit: int = Query(10),
-    db: Session = Depends(get_db)
+    limit: int = Query(10)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-
-    restaurants = (
-        db.query(Restaurant)
-        .filter(Restaurant.owner_id == current_user.id)
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-
-    return [serialize_restaurant(r, db) for r in restaurants]
-
+    current_user = get_current_user_from_header(authorization)
+    restaurants = list(mongo_db.restaurants.find({"owner_id": current_user["_id"]}).skip(skip).limit(limit))
+    return [serialize_restaurant(r) for r in restaurants]
 
 @router.get("/owner/dashboard", response_model=dict)
-def get_owner_dashboard(
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
-):
-    current_user = get_current_user_from_header(authorization, db)
-
-    restaurants = db.query(Restaurant).filter(
-        Restaurant.owner_id == current_user.id
-    ).all()
+def get_owner_dashboard(authorization: str = Header(None)):
+    current_user = get_current_user_from_header(authorization)
+    restaurants = list(mongo_db.restaurants.find({"owner_id": current_user["_id"]}))
 
     if not restaurants:
         return {
@@ -209,23 +166,19 @@ def get_owner_dashboard(
             "restaurants": []
         }
 
-    restaurant_ids = [r.id for r in restaurants]
+    restaurant_ids = [r["_id"] for r in restaurants]
 
-    total_favorites = db.query(func.count(Favorite.id)).filter(
-        Favorite.restaurant_id.in_(restaurant_ids)
-    ).scalar() or 0
+    total_favorites = mongo_db.favourites.count_documents({"restaurant_id": {"$in": restaurant_ids}})
+    total_reviews = mongo_db.reviews.count_documents({"restaurant_id": {"$in": restaurant_ids}})
+    
+    pipeline = [
+        {"$match": {"_id": {"$in": restaurant_ids}}},
+        {"$group": {"_id": None, "avg": {"$avg": "$average_rating"}}}
+    ]
+    avg_res = list(mongo_db.restaurants.aggregate(pipeline))
+    avg_rating = avg_res[0]["avg"] if avg_res else 0
 
-    total_reviews = db.query(func.count(Review.id)).filter(
-        Review.restaurant_id.in_(restaurant_ids)
-    ).scalar() or 0
-
-    avg_rating = db.query(func.avg(Restaurant.average_rating)).filter(
-        Restaurant.id.in_(restaurant_ids)
-    ).scalar() or 0
-
-    recent_reviews = db.query(Review).filter(
-        Review.restaurant_id.in_(restaurant_ids)
-    ).order_by(Review.created_at.desc()).limit(5).all()
+    recent_reviews = list(mongo_db.reviews.find({"restaurant_id": {"$in": restaurant_ids}}).sort("created_at", -1).limit(5))
 
     return {
         "total_restaurants": len(restaurants),
@@ -234,76 +187,99 @@ def get_owner_dashboard(
         "total_reviews": total_reviews,
         "recent_reviews": [
             {
-                "id": r.id,
-                "restaurant_id": r.restaurant_id,
-                "rating": r.rating,
-                "comment": r.comment,
-                "created_at": r.created_at
+                "id": r["_id"],
+                "restaurant_id": r["restaurant_id"],
+                "rating": r["rating"],
+                "comment": r.get("comment"),
+                "created_at": r.get("created_at")
             }
             for r in recent_reviews
         ],
-        "restaurants": [serialize_restaurant(r, db) for r in restaurants]
+        "restaurants": [serialize_restaurant(r) for r in restaurants]
     }
 
-
 @router.get("/{restaurant_id}", response_model=RestaurantResponse)
-def get_restaurant(restaurant_id: int, db: Session = Depends(get_db)):
-    restaurant = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
-
+def get_restaurant(restaurant_id: int):
+    restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
     if not restaurant:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Restaurant not found"
         )
-
-    return serialize_restaurant(restaurant, db)
-
+    return serialize_restaurant(restaurant)
 
 @router.post("/", response_model=RestaurantResponse)
 def create_restaurant(
     restaurant_data: RestaurantCreate,
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
+    authorization: str = Header(None)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-    current_user_role = normalize_role(current_user.role)
+    current_user = get_current_user_from_header(authorization)
+    current_user_role = normalize_role(current_user.get("role"))
     photo_binary = decode_photo_data(restaurant_data.photo_data)
 
-    new_restaurant = Restaurant(
-        name=restaurant_data.name,
-        cuisine_type=restaurant_data.cuisine_type,
-        description=restaurant_data.description,
-        address=restaurant_data.address,
-        city=restaurant_data.city,
-        zip_code=restaurant_data.zip_code,
-        phone=restaurant_data.phone,
-        email=restaurant_data.email,
-        hours_of_operation=json.dumps(restaurant_data.hours_of_operation)
-        if restaurant_data.hours_of_operation is not None else None,
-        amenities=json.dumps(restaurant_data.amenities)
-        if restaurant_data.amenities is not None else None,
-        pricing_tier=restaurant_data.pricing_tier,
-        photos=photo_binary,
-        owner_id=current_user.id if current_user_role == "owner" else None
-    )
+    last_rest = mongo_db.restaurants.find_one({}, sort=[("_id", -1)])
+    new_id = (last_rest["_id"] + 1) if last_rest else 1
 
-    db.add(new_restaurant)
-    db.commit()
-    db.refresh(new_restaurant)
+    new_restaurant = {
+        "_id": new_id,
+        "mysql_id": new_id,
+        "name": restaurant_data.name,
+        "cuisine_type": restaurant_data.cuisine_type,
+        "description": restaurant_data.description,
+        "location": {
+            "address": restaurant_data.address,
+            "city": restaurant_data.city,
+            "zip_code": restaurant_data.zip_code,
+        },
+        "contact": {
+            "phone": restaurant_data.phone,
+            "email": restaurant_data.email,
+        },
+        "hours_of_operation": restaurant_data.hours_of_operation,
+        "amenities": restaurant_data.amenities,
+        "pricing_tier": restaurant_data.pricing_tier,
+        "photos": photo_binary,
+        "owner_id": current_user["_id"] if current_user_role == "owner" else None,
+        "average_rating": 0,
+        "review_count": 0,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    }
 
-    return serialize_restaurant(new_restaurant, db)
+    mongo_db.restaurants.insert_one(new_restaurant)
+    
+    # Send Kafka event for Lab 2 Async requirements
+    kp = get_producer()
+    if kp:
+        event = {
+            "event_type": "restaurant.created",
+            "trace_id": str(uuid.uuid4()),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "actor_id": current_user["_id"],
+            "entity": "restaurant",
+            "payload": {
+                "restaurant_id": new_id,
+                "name": restaurant_data.name,
+                "cuisine_type": restaurant_data.cuisine_type,
+                "address": restaurant_data.address,
+                "city": restaurant_data.city,
+                "owner_id": current_user["_id"] if current_user_role == "owner" else None
+            },
+            "idempotency_key": f"rest:create:{new_id}"
+        }
+        kp.send("restaurant.created", value=event)
+        kp.flush()
 
+    return serialize_restaurant(new_restaurant)
 
 @router.put("/{restaurant_id}", response_model=RestaurantResponse)
 def update_restaurant(
     restaurant_id: int,
     restaurant_data: RestaurantUpdate,
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
+    authorization: str = Header(None)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-
-    restaurant = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+    current_user = get_current_user_from_header(authorization)
+    restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
 
     if not restaurant:
         raise HTTPException(
@@ -311,25 +287,13 @@ def update_restaurant(
             detail="Restaurant not found"
         )
 
-    if restaurant.owner_id and restaurant.owner_id != current_user.id:
+    if restaurant.get("owner_id") and restaurant["owner_id"] != current_user["_id"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have permission to update this restaurant"
         )
 
-    update_data = restaurant_data.model_dump(exclude_unset=True)
-
-    if "hours_of_operation" in update_data:
-        update_data["hours_of_operation"] = (
-            json.dumps(update_data["hours_of_operation"])
-            if update_data["hours_of_operation"] is not None else None
-        )
-
-    if "amenities" in update_data:
-        update_data["amenities"] = (
-            json.dumps(update_data["amenities"])
-            if update_data["amenities"] is not None else None
-        )
+    update_data = restaurant_data.model_dump(exclude_unset=True) if hasattr(restaurant_data, "model_dump") else restaurant_data.dict(exclude_unset=True)
 
     if "photo_data" in update_data:
         photo_data = update_data.pop("photo_data")
@@ -337,24 +301,26 @@ def update_restaurant(
         if photo_binary is not None:
             update_data["photos"] = photo_binary
 
+    update_doc = {"$set": {"updated_at": datetime.now(timezone.utc)}}
     for field, value in update_data.items():
-        setattr(restaurant, field, value)
+        if field in ["address", "city", "zip_code"]:
+            update_doc["$set"][f"location.{field}"] = value
+        elif field in ["phone", "email"]:
+            update_doc["$set"][f"contact.{field}"] = value
+        else:
+            update_doc["$set"][field] = value
 
-    db.commit()
-    db.refresh(restaurant)
-
-    return serialize_restaurant(restaurant, db)
-
+    mongo_db.restaurants.update_one({"_id": restaurant_id}, update_doc)
+    updated_restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
+    return serialize_restaurant(updated_restaurant)
 
 @router.delete("/{restaurant_id}")
 def delete_restaurant(
     restaurant_id: int,
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
+    authorization: str = Header(None)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-
-    restaurant = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+    current_user = get_current_user_from_header(authorization)
+    restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
 
     if not restaurant:
         raise HTTPException(
@@ -362,38 +328,27 @@ def delete_restaurant(
             detail="Restaurant not found"
         )
 
-    if restaurant.owner_id != current_user.id:
+    if restaurant.get("owner_id") != current_user["_id"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have permission to delete this restaurant"
         )
 
-    db.delete(restaurant)
-    db.commit()
-
+    mongo_db.restaurants.delete_one({"_id": restaurant_id})
     return {"message": "Restaurant deleted successfully"}
 
-
 @router.get("/{restaurant_id}/favorites")
-def get_restaurant_favorites_count(
-    restaurant_id: int,
-    db: Session = Depends(get_db)
-):
-    count = db.query(Favorite).filter(
-        Favorite.restaurant_id == restaurant_id
-    ).count()
-
+def get_restaurant_favorites_count(restaurant_id: int):
+    count = mongo_db.favourites.count_documents({"restaurant_id": restaurant_id})
     return {"restaurant_id": restaurant_id, "favorite_count": count}
-
 
 @router.post("/{restaurant_id}/claim")
 def claim_restaurant(
     restaurant_id: int,
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
+    authorization: str = Header(None)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-    current_user_role = normalize_role(current_user.role)
+    current_user = get_current_user_from_header(authorization)
+    current_user_role = normalize_role(current_user.get("role"))
 
     if current_user_role != "owner":
         raise HTTPException(
@@ -401,39 +356,33 @@ def claim_restaurant(
             detail="Only restaurant owners can claim restaurants"
         )
 
-    restaurant = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
-
+    restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
     if not restaurant:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Restaurant not found"
         )
 
-    if restaurant.owner_id:
+    if restaurant.get("owner_id"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This restaurant is already claimed by another owner"
         )
 
-    restaurant.owner_id = current_user.id
-    db.commit()
-    db.refresh(restaurant)
-
+    mongo_db.restaurants.update_one({"_id": restaurant_id}, {"$set": {"owner_id": current_user["_id"]}})
+    updated_restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
     return {
         "message": "Restaurant claimed successfully",
-        "restaurant": serialize_restaurant(restaurant, db)
+        "restaurant": serialize_restaurant(updated_restaurant)
     }
-
 
 @router.post("/{restaurant_id}/unclaim")
 def unclaim_restaurant(
     restaurant_id: int,
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
+    authorization: str = Header(None)
 ):
-    current_user = get_current_user_from_header(authorization, db)
-
-    restaurant = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+    current_user = get_current_user_from_header(authorization)
+    restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
 
     if not restaurant:
         raise HTTPException(
@@ -441,23 +390,21 @@ def unclaim_restaurant(
             detail="Restaurant not found"
         )
 
-    if not restaurant.owner_id:
+    if not restaurant.get("owner_id"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This restaurant is not currently claimed"
         )
 
-    if restaurant.owner_id != current_user.id:
+    if restaurant["owner_id"] != current_user["_id"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only unclaim restaurants you own"
         )
 
-    restaurant.owner_id = None
-    db.commit()
-    db.refresh(restaurant)
-
+    mongo_db.restaurants.update_one({"_id": restaurant_id}, {"$set": {"owner_id": None}})
+    updated_restaurant = mongo_db.restaurants.find_one({"_id": restaurant_id})
     return {
         "message": "Restaurant unclaimed successfully",
-        "restaurant": serialize_restaurant(restaurant, db)
+        "restaurant": serialize_restaurant(updated_restaurant)
     }

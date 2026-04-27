@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from kafka import KafkaConsumer, KafkaProducer
-from sqlalchemy import text
 
 try:
-    from app.database import SessionLocal
+    from app.mongodb import mongo_db
 except ImportError:
-    from database import SessionLocal
+    from mongodb import mongo_db
 
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka-service:9092")
@@ -18,12 +17,22 @@ REVIEW_TOPICS = ["review.created", "review.updated", "review.deleted"]
 STATUS_TOPIC = "booking.status"
 
 
-status_producer = KafkaProducer(
-    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-    value_serializer=lambda value: json.dumps(value).encode("utf-8"),
-    key_serializer=lambda key: key.encode("utf-8") if key else None,
-    retries=5,
-)
+status_producer = None
+
+def get_producer():
+    global status_producer
+    if status_producer is None:
+        try:
+            status_producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+                key_serializer=lambda key: key.encode("utf-8") if key else None,
+                retries=5,
+            )
+        except Exception as e:
+            print(f"Error creating producer: {e}")
+            return None
+    return status_producer
 
 
 def now_iso() -> str:
@@ -45,126 +54,91 @@ def publish_status(original_event: Dict[str, Any], status: str, message: str) ->
         "idempotency_key": f"status:{original_event.get('idempotency_key')}",
     }
 
-    status_producer.send(
+    producer = get_producer()
+    if not producer:
+        print("Cannot publish status: Producer not available")
+        return
+
+    producer.send(
         STATUS_TOPIC,
         key=status_event["idempotency_key"],
         value=status_event,
     )
-    status_producer.flush(timeout=10)
+    producer.flush(timeout=10)
 
 
-def ensure_worker_tables(db) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS processed_kafka_events (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                idempotency_key VARCHAR(255) NOT NULL UNIQUE,
-                event_type VARCHAR(100) NOT NULL,
-                trace_id VARCHAR(100),
-                processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-    )
-    db.commit()
+def ensure_worker_tables() -> None:
+    mongo_db.processed_kafka_events.create_index("idempotency_key", unique=True)
 
 
-def already_processed(db, idempotency_key: str) -> bool:
-    result = db.execute(
-        text("SELECT id FROM processed_kafka_events WHERE idempotency_key = :key"),
-        {"key": idempotency_key},
-    ).fetchone()
-
-    return result is not None
+def already_processed(idempotency_key: str) -> bool:
+    return mongo_db.processed_kafka_events.find_one({"idempotency_key": idempotency_key}) is not None
 
 
-def mark_processed(db, event: Dict[str, Any]) -> None:
-    db.execute(
-        text(
-            """
-            INSERT INTO processed_kafka_events
-            (idempotency_key, event_type, trace_id)
-            VALUES (:idempotency_key, :event_type, :trace_id)
-            """
-        ),
-        {
-            "idempotency_key": event["idempotency_key"],
-            "event_type": event["event_type"],
-            "trace_id": event.get("trace_id"),
-        },
-    )
+def mark_processed(event: Dict[str, Any]) -> None:
+    mongo_db.processed_kafka_events.insert_one({
+        "idempotency_key": event["idempotency_key"],
+        "event_type": event["event_type"],
+        "trace_id": event.get("trace_id"),
+        "processed_at": datetime.now(timezone.utc)
+    })
 
 
-def handle_review_created(db, event: Dict[str, Any]) -> None:
+def handle_review_created(event: Dict[str, Any]) -> None:
     payload = event["payload"]
 
-    db.execute(
-        text(
-            """
-            INSERT INTO reviews (user_id, restaurant_id, rating, comment, created_at, updated_at)
-            VALUES (:user_id, :restaurant_id, :rating, :comment, NOW(), NOW())
-            """
-        ),
-        {
-            "user_id": payload["user_id"],
-            "restaurant_id": payload["restaurant_id"],
-            "rating": payload["rating"],
-            "comment": payload.get("comment"),
-        },
-    )
+    last_rev = mongo_db.reviews.find_one({}, sort=[("_id", -1)])
+    new_id = (last_rev["_id"] + 1) if last_rev else 1
 
-
-def handle_review_updated(db, event: Dict[str, Any]) -> None:
-    payload = event["payload"]
-
-    fields = []
-    params = {
-        "review_id": payload["review_id"],
+    new_review = {
+        "_id": new_id,
+        "mysql_id": new_id,
+        "user_id": payload.get("user_id"),
+        "restaurant_id": payload.get("restaurant_id"),
+        "rating": payload.get("rating"),
+        "comment": payload.get("comment"),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
     }
 
-    if payload.get("rating") is not None:
-        fields.append("rating = :rating")
-        params["rating"] = payload["rating"]
-
-    if payload.get("comment") is not None:
-        fields.append("comment = :comment")
-        params["comment"] = payload["comment"]
-
-    if not fields:
-        return
-
-    fields.append("updated_at = NOW()")
-
-    query = f"""
-        UPDATE reviews
-        SET {", ".join(fields)}
-        WHERE id = :review_id
-    """
-
-    db.execute(text(query), params)
+    print(f"Worker received review creation for restaurant_id: {payload.get('restaurant_id')}")
+    # mongo_db.reviews.insert_one(new_review) # Removed to avoid duplication
 
 
-def handle_review_deleted(db, event: Dict[str, Any]) -> None:
+def handle_review_updated(event: Dict[str, Any]) -> None:
     payload = event["payload"]
 
-    db.execute(
-        text("DELETE FROM reviews WHERE id = :review_id"),
-        {"review_id": payload["review_id"]},
+    updates = {}
+    if "rating" in payload:
+        updates["rating"] = payload["rating"]
+    if "comment" in payload:
+        updates["comment"] = payload["comment"]
+
+    if not updates:
+        return
+
+    updates["updated_at"] = datetime.now(timezone.utc)
+
+    mongo_db.reviews.update_one(
+        {"_id": payload["review_id"]},
+        {"$set": updates}
     )
+
+
+def handle_review_deleted(event: Dict[str, Any]) -> None:
+    payload = event["payload"]
+    mongo_db.reviews.delete_one({"_id": payload["review_id"]})
 
 
 def process_event(event: Dict[str, Any]) -> None:
-    db = SessionLocal()
-
     try:
-        ensure_worker_tables(db)
+        ensure_worker_tables()
 
         idempotency_key = event.get("idempotency_key")
         if not idempotency_key:
             raise ValueError("Missing idempotency_key")
 
-        if already_processed(db, idempotency_key):
+        if already_processed(idempotency_key):
             print(f"Skipping duplicate event: {idempotency_key}")
             publish_status(event, "duplicate_skipped", "Duplicate event skipped by worker")
             return
@@ -172,22 +146,20 @@ def process_event(event: Dict[str, Any]) -> None:
         event_type = event.get("event_type")
 
         if event_type == "review.created":
-            handle_review_created(db, event)
+            handle_review_created(event)
         elif event_type == "review.updated":
-            handle_review_updated(db, event)
+            handle_review_updated(event)
         elif event_type == "review.deleted":
-            handle_review_deleted(db, event)
+            handle_review_deleted(event)
         else:
             raise ValueError(f"Unsupported event_type: {event_type}")
 
-        mark_processed(db, event)
-        db.commit()
+        mark_processed(event)
 
         print(f"Processed {event_type} trace_id={event.get('trace_id')}")
         publish_status(event, "processed", f"{event_type} processed successfully")
 
     except Exception as exc:
-        db.rollback()
         print(f"Failed to process event: {exc}")
         try:
             publish_status(event, "failed", str(exc))
@@ -195,14 +167,11 @@ def process_event(event: Dict[str, Any]) -> None:
             print(f"Failed to publish status event: {status_exc}")
         raise
 
-    finally:
-        db.close()
-
 
 def main() -> None:
-    print("Starting Review Worker Service...")
-    print(f"Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}")
-    print(f"Subscribing to topics: {REVIEW_TOPICS}")
+    print("Starting Review Worker Service...", flush=True)
+    print(f"Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}", flush=True)
+    print(f"Subscribing to topics: {REVIEW_TOPICS}", flush=True)
 
     while True:
         try:
@@ -218,7 +187,7 @@ def main() -> None:
 
             for message in consumer:
                 event = message.value
-                print(f"Received event from topic={message.topic}: {event}")
+                print(f"Received event from topic={message.topic}: {event}", flush=True)
 
                 try:
                     process_event(event)
@@ -227,8 +196,8 @@ def main() -> None:
                     print("Event failed. Offset not committed.")
 
         except Exception as exc:
-            print(f"Kafka consumer error: {exc}")
-            print("Retrying in 5 seconds...")
+            print(f"Kafka consumer error: {exc}", flush=True)
+            print("Retrying in 5 seconds...", flush=True)
             time.sleep(5)
 
 

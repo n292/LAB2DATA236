@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - yelp-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - yelp-net
+
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - yelp-net
+
+  user-reviewer:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.user-reviewer
+    ports:
+      - "8001:8001"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  owner:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.owner
+    ports:
+      - "8002:8002"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  restaurant:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.restaurant
+    ports:
+      - "8003:8003"
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  review:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.review
+    ports:
+      - "8004:8004"
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  restaurant-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.restaurant-worker
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  review-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.review-worker
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+      - kafka
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=yelp_mongo_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    networks:
+      - yelp-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_USER_API=http://localhost:8001
+      - REACT_APP_OWNER_API=http://localhost:8002
+      - REACT_APP_RESTAURANT_API=http://localhost:8003
+      - REACT_APP_REVIEW_API=http://localhost:8004
+      - HOST=0.0.0.0
+    depends_on:
+      - user-reviewer
+      - owner
+      - restaurant
+      - review
+    networks:
+      - yelp-net
+
+networks:
+  yelp-net:
+    driver: bridge
+
+volumes:
+  mongodb_data:
